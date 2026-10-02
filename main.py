@@ -37,7 +37,7 @@ from aiogram.types import (
 # ============================================================
 #  ⚙️  CONFIG  (Render → Environment Variables me daalna)
 # ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8578269004:AAGuuYFhHH9Elk0w6-cf8YWzJEN65ZnYII4")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8473093687:AAGf4cWInGJsPgtPlchg-VmKEqXMVp8Ypwo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8388115033"))
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 
