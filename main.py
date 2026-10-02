@@ -53,19 +53,13 @@ def init_db():
             upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bot_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
     conn.commit()
     conn.close()
 
 init_db()
 
 # =========================================================
-# PROCESS & PACKAGE HELPER FUNCTIONS
+# HELPER FUNCTIONS
 # =========================================================
 def kill_process_tree(pid):
     try:
@@ -88,7 +82,7 @@ def auto_install_packages(file_path):
         print(f"[AUTO-INSTALL LOG]: {e}")
 
 # =========================================================
-# UI KEYBOARD GENERATOR (ANIMATED & COLORFUL BUTTONS)
+# KEYBOARDS
 # =========================================================
 def get_main_keyboard(user_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -121,7 +115,7 @@ def get_file_control_keyboard(file_id, is_running):
         btn_start = types.InlineKeyboardButton("▶️ 🟢 S T A R T 🟢 ▶️", callback_data=f"act_start_{file_id}")
         markup.add(btn_start)
 
-    btn_del = types.InlineKeyboardButton("🗑️ ⚠️ D E L E T E ⚠️ 🗑️", callback_data=f"act_delete_{file_id}")
+    btn_del = types.InlineKeyboardButton("🗑️ ⚠️️ D E L E T E ⚠️ 🗑️", callback_data=f"act_delete_{file_id}")
     btn_log = types.InlineKeyboardButton("📑 📜 V I E W  L O G S 📜 📑", callback_data=f"act_log_{file_id}")
     btn_back = types.InlineKeyboardButton("⬅️ 🔙 B A C K  M E N U 🔙 ⬅️", callback_data="btn_back_main")
 
@@ -130,7 +124,7 @@ def get_file_control_keyboard(file_id, is_running):
     return markup
 
 # =========================================================
-# TELEGRAM BOT HANDLERS
+# BOT HANDLERS
 # =========================================================
 @bot.message_handler(commands=['start', 'menu'])
 def send_welcome(message):
@@ -152,7 +146,7 @@ def send_welcome(message):
         f"├ 🐍 Python (`.py`) & 🟨 Node.js (`.js`) Support\n"
         f"├ 📦 Auto Package/Requirements Installer\n"
         f"├ 🎛️ Real-Time Process Manager\n"
-        f"└ 📊 Colorful & Animated Interactive Dashboard\n\n"
+        f"└ 📊 Colorful Interactive Dashboard\n\n"
         f"👇 **Choose an action below:**"
     )
 
@@ -195,7 +189,6 @@ def handle_document_upload(message):
 
         pid = proc.pid if proc else None
         status = "Running" if pid else "Stopped"
-
         file_type = "Python" if file_name.endswith('.py') else ("NodeJS" if file_name.endswith('.js') else "Archive")
 
         conn = sqlite3.connect("bot_data.db")
@@ -219,20 +212,17 @@ def handle_document_upload(message):
     except Exception as e:
         bot.edit_message_text(f"❌ **Hosting Failed!** Error: `{str(e)}`", chat_id=message.chat.id, message_id=msg.message_id)
 
-# =========================================================
-# CALLBACK QUERY HANDLER (BUTTON ACTIONS)
-# =========================================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user_id = call.from_user.id
     data = call.data
 
-    if data == "btn_back_main" or data == "btn_refresh":
+    if data in ["btn_back_main", "btn_refresh"]:
         welcome_text = (
             f"✨ **SR HAKER HOSTING CONTROL DASHBOARD** ✨\n\n"
             f"🆔 **User ID:** `{user_id}`\n"
             f"⚡ **System Status:** `Active 🟢`\n\n"
-            f"Select an option using the colorful menu below:"
+            f"Select an option using the menu below:"
         )
         try:
             bot.edit_message_text(welcome_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_main_keyboard(user_id))
@@ -373,15 +363,15 @@ def handle_callbacks(call):
 
     elif data == "btn_logs" or data.startswith("act_log_"):
         bot.answer_callback_query(call.id, "Fetching Logs...")
-        bot.send_message(call.message.chat.id, "📊 **LOGS SYSTEM:** All systems running smoothly. No active errors reported.")
+        bot.send_message(call.message.chat.id, "📊 **LOGS SYSTEM:** All processes running without errors.")
 
     elif data == "btn_help":
         bot.answer_callback_query(call.id)
         help_text = (
             "💡 **SR HAKER HOSTING BOT HELP**\n\n"
             "1️⃣ Send your `.py` or `.js` script.\n"
-            "2️⃣ The bot automatically installs required libraries.\n"
-            "3️⃣ Your script starts running in the background 24/7.\n"
+            "2️⃣ Auto-installer setup dependencies.\n"
+            "3️⃣ Script runs 24/7 in background.\n"
             "4️⃣ Use **My Files** to stop, restart, or delete scripts anytime."
         )
         bot.send_message(call.message.chat.id, help_text)
@@ -399,26 +389,36 @@ def handle_callbacks(call):
             f"👑 **ADMIN CONTROL PANEL** 👑\n\n"
             f"👥 **Total Users:** `{total_users}`\n"
             f"📁 **Total Hosted Files:** `{total_files}`\n"
-            f"🖥️ **CPU Usage:** `{psutil.cpu_percent()}%`\n"
+            f"🖥️️ **CPU Usage:** `{psutil.cpu_percent()}%`\n"
             f"🧠 **RAM Usage:** `{psutil.virtual_memory().percent}%`"
         )
         bot.send_message(call.message.chat.id, admin_text)
 
 # =========================================================
-# MAIN BOT EXECUTION
+# CONFLICT-SAFE POLLING ENGINE
 # =========================================================
+def start_bot_polling():
+    while True:
+        try:
+            print("🚀 Starting SR HAKER Host Bot Polling...")
+            # Webhook aur ongoing connections drop karne ke liye drop_pending_updates True rakha hai
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
+        except telebot.apihelper.ApiTelegramException as e:
+            if "Conflict" in str(e) or "409" in str(e):
+                print("⚠️ Telegram 409 Conflict Detected! Clearing previous instance...")
+                time.sleep(5)
+            else:
+                print(f"⚠️ Telegram API Error: {e}")
+                time.sleep(3)
+        except Exception as e:
+            print(f"⚠️ Unexpected Error: {e}")
+            time.sleep(3)
+
 if __name__ == '__main__':
-    # Start Flask Web Server
+    # Start Keep-Alive Flask Server
     threading.Thread(target=run_flask, daemon=True).start()
-
-    # Clear Webhooks before Polling
-    try:
-        bot.remove_webhook()
-    except Exception as e:
-        print(f"[WEBHOOK WARNING]: {e}")
-
-    print("=========================================")
-    print("🚀 SR HAKER HOST BOT STARTED SUCCESSFULLY")
-    print("=========================================")
-
-    bot.infinity_polling()
+    
+    # Start Polling with Conflict Protection
+    start_bot_polling()
