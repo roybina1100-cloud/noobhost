@@ -1,424 +1,564 @@
+# ============================================================
+#  🤖 ANIMATED TELEGRAM BOT  —  Render Ready
+#  File: bot.py
+#  Features:
+#   ✅ Purane host ka webhook auto-remove (delete_webhook)
+#   ✅ Animated buttons / loading frames
+#   ✅ Admin Panel (Stats, Broadcast, Users)
+#   ✅ SQLite user database
+#   ✅ Render Web Service compatible (PORT binding)
+# ============================================================
+
+import asyncio
+import html
+import logging
 import os
-import sys
-import time
-import subprocess
-import threading
 import sqlite3
-import psutil
-import telebot
-from telebot import types
-from flask import Flask
+from datetime import datetime
 
-# =========================================================
-# CONFIGURATION & SECURITY
-# =========================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8578269004:AAGuuYFhHH9Elk0w6-cf8YWzJEN65ZnYII4")
-OWNER_ID = int(os.environ.get("OWNER_ID", "8388115033"))
+from aiohttp import web
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-app = Flask(__name__)
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-# =========================================================
-# FLASK 24/7 KEEP-ALIVE SERVER
-# =========================================================
-@app.route('/')
-def home():
-    return "⚡ SR HAKER HOSTING BOT IS ALIVE 24/7 ⚡"
+# ============================================================
+#  ⚙️  CONFIG  (Render → Environment Variables me daalna)
+# ============================================================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8578269004:AAGuuYFhHH9Elk0w6-cf8YWzJEN65ZnYII4")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8388115033"))
+DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+# Yahan apne channel / support link daal do
+CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/telegram")
+SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/telegram")
 
-# =========================================================
-# DATABASE SETUP
-# =========================================================
-def init_db():
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute("""
+# ============================================================
+#  🎞️  ANIMATION FRAMES
+# ============================================================
+LOADING_FRAMES = ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
+WELCOME_FRAMES = ["👋", "👋✨", "✨🎉", "🎉🤖", "🤖💫", "💫✅"]
+PARTY_FRAMES = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚪", "⚫", "🌟", "✨", "💫", "⭐"]
+
+# ============================================================
+#  🗄️  DATABASE
+# ============================================================
+def db_init() -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            is_admin INTEGER DEFAULT 0,
-            joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            user_id     INTEGER PRIMARY KEY,
+            username    TEXT,
+            first_name  TEXT,
+            joined_at   TEXT
         )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS hosted_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            filename TEXT,
-            file_type TEXT,
-            pid INTEGER DEFAULT NULL,
-            status TEXT DEFAULT 'Stopped',
-            upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        """
+    )
+    con.commit()
+    con.close()
+
+
+def add_user(user) -> bool:
+    """Naya user add karta hai. True = naya, False = purana."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("SELECT 1 FROM users WHERE user_id = ?", (user.id,))
+    exists = cur.fetchone() is not None
+    if not exists:
+        cur.execute(
+            "INSERT INTO users (user_id, username, first_name, joined_at) VALUES (?,?,?,?)",
+            (user.id, user.username or "", user.first_name or "", datetime.now().isoformat()),
         )
-    """)
-    conn.commit()
-    conn.close()
+        con.commit()
+    con.close()
+    return not exists
 
-init_db()
 
-# =========================================================
-# HELPER FUNCTIONS
-# =========================================================
-def kill_process_tree(pid):
-    try:
-        parent = psutil.Process(pid)
-        for child in parent.children(recursive=True):
-            child.kill()
-        parent.kill()
-        return True
-    except Exception as e:
-        print(f"[ERROR] Process Kill Failed ({pid}): {e}")
-        return False
+def total_users() -> int:
+    con = sqlite3.connect(DB_PATH)
+    n = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    con.close()
+    return n
 
-def auto_install_packages(file_path):
-    try:
-        if file_path.endswith('.py'):
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], capture_output=True, timeout=60)
-        elif file_path.endswith('.js'):
-            subprocess.run(["npm", "install"], capture_output=True, timeout=60)
-    except Exception as e:
-        print(f"[AUTO-INSTALL LOG]: {e}")
 
-# =========================================================
-# KEYBOARDS
-# =========================================================
-def get_main_keyboard(user_id):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    
-    btn_host = types.InlineKeyboardButton("🚀 ⚡ H O S T  F I L E ⚡ 🚀", callback_data="btn_host")
-    btn_status = types.InlineKeyboardButton("📊 🟢 L I V E  S T A T U S 🟢 📊", callback_data="btn_status")
-    btn_my_files = types.InlineKeyboardButton("📁 📂 M Y  F I L E S 📂 📁", callback_data="btn_myfiles")
-    btn_logs = types.InlineKeyboardButton("📑 🔍 C H E C K  L O G S 🔍 📑", callback_data="btn_logs")
-    btn_help = types.InlineKeyboardButton("❓ 💡 H E L P & I N F O 💡 ❓", callback_data="btn_help")
-    btn_refresh = types.InlineKeyboardButton("🔄 ✨ R E F R E S H ✨ 🔄", callback_data="btn_refresh")
+def all_users() -> list[int]:
+    con = sqlite3.connect(DB_PATH)
+    rows = con.execute("SELECT user_id FROM users").fetchall()
+    con.close()
+    return [r[0] for r in rows]
 
-    markup.add(btn_host)
-    markup.add(btn_status, btn_my_files)
-    markup.add(btn_logs, btn_help)
-    markup.add(btn_refresh)
 
-    if user_id == OWNER_ID:
-        btn_admin = types.InlineKeyboardButton("👑 🔥 A D M I N  P A N E L 🔥 👑", callback_data="btn_admin")
-        markup.add(btn_admin)
+def today_users() -> int:
+    con = sqlite3.connect(DB_PATH)
+    today = datetime.now().strftime("%Y-%m-%d")
+    n = con.execute(
+        "SELECT COUNT(*) FROM users WHERE joined_at LIKE ?", (today + "%",)
+    ).fetchone()[0]
+    con.close()
+    return n
 
-    return markup
 
-def get_file_control_keyboard(file_id, is_running):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    if is_running:
-        btn_stop = types.InlineKeyboardButton("🛑 🔴 S T O P 🔴 🛑", callback_data=f"act_stop_{file_id}")
-        btn_restart = types.InlineKeyboardButton("🔄 ⚡ R E S T A R T ⚡ 🔄", callback_data=f"act_restart_{file_id}")
-        markup.add(btn_stop, btn_restart)
-    else:
-        btn_start = types.InlineKeyboardButton("▶️ 🟢 S T A R T 🟢 ▶️", callback_data=f"act_start_{file_id}")
-        markup.add(btn_start)
+# ============================================================
+#  🤖 BOT + DISPATCHER
+# ============================================================
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
 
-    btn_del = types.InlineKeyboardButton("🗑️ ⚠️️ D E L E T E ⚠️ 🗑️", callback_data=f"act_delete_{file_id}")
-    btn_log = types.InlineKeyboardButton("📑 📜 V I E W  L O G S 📜 📑", callback_data=f"act_log_{file_id}")
-    btn_back = types.InlineKeyboardButton("⬅️ 🔙 B A C K  M E N U 🔙 ⬅️", callback_data="btn_back_main")
 
-    markup.add(btn_del, btn_log)
-    markup.add(btn_back)
-    return markup
-
-# =========================================================
-# BOT HANDLERS
-# =========================================================
-@bot.message_handler(commands=['start', 'menu'])
-def send_welcome(message):
-    user_id = message.from_user.id
-    username = message.from_user.username or "Hacker"
-
-    conn = sqlite3.connect("bot_data.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
-    conn.commit()
-    conn.close()
-
-    welcome_text = (
-        f"✨ **WELCOME TO SR HAKER HOSTING BOT!** ✨\n\n"
-        f"🆔 **User ID:** `{user_id}`\n"
-        f"👤 **Username:** `@{username}`\n\n"
-        f"🔥 **Features:**\n"
-        f"├ 🚀 24/7 Non-Stop Server Hosting\n"
-        f"├ 🐍 Python (`.py`) & 🟨 Node.js (`.js`) Support\n"
-        f"├ 📦 Auto Package/Requirements Installer\n"
-        f"├ 🎛️ Real-Time Process Manager\n"
-        f"└ 📊 Colorful Interactive Dashboard\n\n"
-        f"👇 **Choose an action below:**"
+# ============================================================
+#  ⌨️  KEYBOARDS
+# ============================================================
+def main_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📢 Channel", url=CHANNEL_URL),
+                InlineKeyboardButton(text="💬 Support", url=SUPPORT_URL),
+            ],
+            [
+                InlineKeyboardButton(text="👤 My Profile", callback_data="profile"),
+                InlineKeyboardButton(text="🎬 Animation", callback_data="anim"),
+            ],
+            [
+                InlineKeyboardButton(text="ℹ️ Help", callback_data="help"),
+                InlineKeyboardButton(text="📊 Stats", callback_data="stats"),
+            ],
+        ]
     )
 
-    bot.reply_to(message, welcome_text, reply_markup=get_main_keyboard(user_id))
 
-@bot.message_handler(commands=['host'])
-def host_command(message):
-    bot.reply_to(message, "📁 **Please send your `.py`, `.js` or `.zip` file now!**")
+def back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    )
 
-@bot.message_handler(content_types=['document'])
-def handle_document_upload(message):
-    user_id = message.from_user.id
-    file_name = message.document.file_name
 
-    if not (file_name.endswith('.py') or file_name.endswith('.js') or file_name.endswith('.zip')):
-        bot.reply_to(message, "❌ **Invalid File Type!** Only `.py`, `.js`, and `.zip` files are supported.")
-        return
+def admin_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Bot Stats", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="📣 Broadcast", callback_data="admin_broadcast")],
+            [InlineKeyboardButton(text="👥 Users List", callback_data="admin_users")],
+            [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")],
+        ]
+    )
 
-    msg = bot.reply_to(message, "⏳ **Downloading and processing your file...**")
 
+# ============================================================
+#  ✨ ANIMATION HELPERS
+# ============================================================
+async def animate_new(message: Message, frames, final_text, keyboard=None, delay=0.35):
+    """Naya message bhej kar usko frames se animate karta hai."""
+    sent = await message.answer(frames[0])
+    for frame in frames[1:]:
+        await asyncio.sleep(delay)
+        try:
+            await sent.edit_text(frame)
+        except TelegramBadRequest:
+            pass
+    await asyncio.sleep(delay)
     try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
+        await sent.edit_text(final_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    except TelegramBadRequest:
+        await message.answer(final_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    return sent
 
-        user_dir = f"uploads/{user_id}"
-        os.makedirs(user_dir, exist_ok=True)
-        file_path = os.path.join(user_dir, file_name)
 
-        with open(file_path, 'wb') as f:
-            f.write(downloaded_file)
-
-        bot.edit_message_text("📦 **Installing dependencies... Please wait!**", chat_id=message.chat.id, message_id=msg.message_id)
-        auto_install_packages(file_path)
-
-        proc = None
-        if file_name.endswith('.py'):
-            proc = subprocess.Popen([sys.executable, file_path])
-        elif file_name.endswith('.js'):
-            proc = subprocess.Popen(["node", file_path])
-
-        pid = proc.pid if proc else None
-        status = "Running" if pid else "Stopped"
-        file_type = "Python" if file_name.endswith('.py') else ("NodeJS" if file_name.endswith('.js') else "Archive")
-
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO hosted_files (user_id, filename, file_type, pid, status) VALUES (?, ?, ?, ?, ?)",
-                       (user_id, file_name, file_type, pid, status))
-        file_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-
-        success_text = (
-            f"🚀 **FILE HOSTED SUCCESSFULLY!** 🚀\n\n"
-            f"📄 **File:** `{file_name}`\n"
-            f"📌 **PID:** `{pid}`\n"
-            f"🟢 **Status:** `Running 24/7`\n"
-            f"⚡ **Type:** `{file_type}`"
-        )
-
-        bot.edit_message_text(success_text, chat_id=message.chat.id, message_id=msg.message_id, reply_markup=get_file_control_keyboard(file_id, True))
-
-    except Exception as e:
-        bot.edit_message_text(f"❌ **Hosting Failed!** Error: `{str(e)}`", chat_id=message.chat.id, message_id=msg.message_id)
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    user_id = call.from_user.id
-    data = call.data
-
-    if data in ["btn_back_main", "btn_refresh"]:
-        welcome_text = (
-            f"✨ **SR HAKER HOSTING CONTROL DASHBOARD** ✨\n\n"
-            f"🆔 **User ID:** `{user_id}`\n"
-            f"⚡ **System Status:** `Active 🟢`\n\n"
-            f"Select an option using the menu below:"
-        )
+async def animate_edit(callback: CallbackQuery, frames, final_text, keyboard=None, delay=0.22):
+    """Purane message ko frames se animate karke naya text dikhata hai."""
+    for frame in frames:
         try:
-            bot.edit_message_text(welcome_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_main_keyboard(user_id))
-            bot.answer_callback_query(call.id, "✨ Dashboard Refreshed!")
+            await callback.message.edit_text(frame)
+        except TelegramBadRequest:
+            pass
+        await asyncio.sleep(delay)
+    try:
+        await callback.message.edit_text(
+            final_text, reply_markup=keyboard, parse_mode=ParseMode.HTML
+        )
+    except TelegramBadRequest:
+        pass
+
+
+# ============================================================
+#  🧠 FSM STATES
+# ============================================================
+class BroadcastState(StatesGroup):
+    waiting = State()
+
+
+# ============================================================
+#  🚀 COMMAND HANDLERS
+# ============================================================
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    is_new = add_user(message.from_user)
+    name = html.escape(message.from_user.first_name or "Dost")
+
+    text = (
+        f"<b>✨ Namaste {name}! ✨</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 Main ek <b>Animated Telegram Bot</b> hoon.\n"
+        f"🎯 Neeche ke buttons se kaam karo.\n\n"
+        f"🆔 <b>Tumhari ID:</b> <code>{message.from_user.id}</code>\n"
+        f"👑 <b>Role:</b> {'Admin ✅' if message.from_user.id == ADMIN_ID else 'User 👤'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    if is_new:
+        text += "\n\n🎉 <i>Aapka swagat hai! Aap naye member ho.</i>"
+
+    await animate_new(message, WELCOME_FRAMES, text, main_menu_kb())
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(
+        "<b>ℹ️ HELP MENU</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/start — Bot dobara start karo\n"
+        "/help — Yeh help menu\n"
+        "/profile — Apni profile dekho\n"
+        "/admin — Admin panel (sirf admin)\n"
+        "/cancel — Koi bhi kaam cancel karo\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 Har button click par animation dikhegi!",
+        reply_markup=back_kb(),
+    )
+
+
+@dp.message(Command("profile"))
+async def cmd_profile(message: Message):
+    u = message.from_user
+    text = (
+        f"👤 <b>YOUR PROFILE</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📛 <b>Name:</b> {html.escape(u.full_name)}\n"
+        f"🔗 <b>Username:</b> @{u.username if u.username else 'None'}\n"
+        f"🆔 <b>ID:</b> <code>{u.id}</code>\n"
+        f"🌐 <b>Language:</b> {u.language_code}\n"
+        f"👑 <b>Role:</b> {'Admin ✅' if u.id == ADMIN_ID else 'User 👤'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
+        ]
+    )
+    if u.id == ADMIN_ID:
+        kb.inline_keyboard.insert(
+            0, [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin_panel")]
+        )
+    await animate_new(message, LOADING_FRAMES[:6], text, kb)
+
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ <b>Access Denied!</b>\nAap admin nahi ho.")
+    await animate_new(
+        message,
+        ["🔐", "🔓", "🛠️", "✅"],
+        "<b>🛠️ ADMIN PANEL</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        "Neeche se option choose karo 👇\n━━━━━━━━━━━━━━━━━━━━",
+        admin_kb(),
+    )
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ <b>Cancel ho gaya.</b>", reply_markup=back_kb())
+
+
+# ============================================================
+#  🔘 CALLBACK HANDLERS (Animated Buttons)
+# ============================================================
+@dp.callback_query(F.data == "back_home")
+async def cb_back_home(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("🏠 Home")
+    u = callback.from_user
+    text = (
+        f"<b>✨ Main Menu ✨</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 Kaise madad kar sakta hoon, {html.escape(u.first_name or 'Dost')}?\n"
+        f"👇 Neeche se choose karo\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, LOADING_FRAMES[:5], text, main_menu_kb())
+
+
+@dp.callback_query(F.data == "profile")
+async def cb_profile(callback: CallbackQuery):
+    await callback.answer("👤 Loading profile...")
+    u = callback.from_user
+    text = (
+        f"👤 <b>YOUR PROFILE</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📛 <b>Name:</b> {html.escape(u.full_name)}\n"
+        f"🔗 <b>Username:</b> @{u.username if u.username else 'None'}\n"
+        f"🆔 <b>ID:</b> <code>{u.id}</code>\n"
+        f"🌐 <b>Language:</b> {u.language_code}\n"
+        f"👑 <b>Role:</b> {'Admin ✅' if u.id == ADMIN_ID else 'User 👤'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    kb = back_kb()
+    if u.id == ADMIN_ID:
+        kb.inline_keyboard.insert(
+            0, [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin_panel")]
+        )
+    await animate_edit(callback, LOADING_FRAMES[:6], text, kb)
+
+
+@dp.callback_query(F.data == "anim")
+async def cb_anim(callback: CallbackQuery):
+    await callback.answer("🎬 Animation chal rahi hai...")
+    text = (
+        "🎬 <b>ANIMATION DEMO</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "✨ Dekha? Buttons par click karte hi\n"
+        "🔄 message animate hota hai!\n\n"
+        "🎯 Yeh trick Telegram inline buttons\n"
+        "    ke saath <b>edit_text</b> se hoti hai.\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, PARTY_FRAMES, text, back_kb(), delay=0.18)
+
+
+@dp.callback_query(F.data == "help")
+async def cb_help(callback: CallbackQuery):
+    await callback.answer("ℹ️ Help")
+    text = (
+        "<b>ℹ️ HELP MENU</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/start — Bot dobara start karo\n"
+        "/help — Yeh help menu\n"
+        "/profile — Apni profile dekho\n"
+        "/admin — Admin panel (sirf admin)\n"
+        "/cancel — Kaam cancel karo\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 Har button click par animation dikhegi!"
+    )
+    await animate_edit(callback, LOADING_FRAMES[:5], text, back_kb())
+
+
+@dp.callback_query(F.data == "stats")
+async def cb_stats(callback: CallbackQuery):
+    await callback.answer("📊 Stats")
+    text = (
+        "📊 <b>BOT STATISTICS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 <b>Total Users:</b> {total_users()}\n"
+        f"🆕 <b>Aaj ke Users:</b> {today_users()}\n"
+        f"⚡ <b>Status:</b> Online ✅\n"
+        f"🕒 <b>Time:</b> {datetime.now().strftime('%d-%m-%Y %H:%M')}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, LOADING_FRAMES[:6], text, back_kb())
+
+
+# ---------------- ADMIN CALLBACKS ----------------
+@dp.callback_query(F.data == "admin_panel")
+async def cb_admin_panel(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("❌ Aap admin nahi ho!", show_alert=True)
+    await callback.answer("🛠️ Admin Panel")
+    text = (
+        "<b>🛠️ ADMIN PANEL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Neeche se option choose karo 👇\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, ["🔐", "🔓", "🛠️", "✅"], text, admin_kb())
+
+
+@dp.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("❌ Access Denied!", show_alert=True)
+    await callback.answer("📊 Loading...")
+    text = (
+        "📊 <b>ADMIN STATISTICS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 <b>Total Users:</b> {total_users()}\n"
+        f"🆕 <b>Today Joined:</b> {today_users()}\n"
+        f"👑 <b>Admin ID:</b> <code>{ADMIN_ID}</code>\n"
+        f"🤖 <b>Bot:</b> @{(await bot.get_me()).username}\n"
+        f"🕒 <b>Server Time:</b> {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, LOADING_FRAMES[:6], text, admin_kb())
+
+
+@dp.callback_query(F.data == "admin_users")
+async def cb_admin_users(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("❌ Access Denied!", show_alert=True)
+    await callback.answer("👥 Loading...")
+    users = all_users()
+    preview = "\n".join(f"• <code>{u}</code>" for u in users[:30]) or "Koi user nahi."
+    text = (
+        f"👥 <b>USERS LIST</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total: <b>{len(users)}</b>\n\n"
+        f"{preview}\n"
+        f"{'... aur bhi' if len(users) > 30 else ''}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    await animate_edit(callback, LOADING_FRAMES[:5], text, admin_kb())
+
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def cb_broadcast(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("❌ Access Denied!", show_alert=True)
+    await state.set_state(BroadcastState.waiting)
+    await callback.answer("📣 Broadcast Mode")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="back_home")]]
+    )
+    await animate_edit(
+        callback,
+        ["📣", "📢", "📨"],
+        "📣 <b>BROADCAST MODE</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Jo message bhejna hai wo bhejo\n"
+        "(text / photo / video — kuch bhi)\n\n"
+        "❌ Cancel karne ke liye /cancel\n"
+        "━━━━━━━━━━━━━━━━━━━━",
+        kb,
+    )
+
+
+@dp.message(BroadcastState.waiting)
+async def do_broadcast(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+
+    users = all_users()
+    total = len(users)
+    if total == 0:
+        return await message.answer("❌ Koi user nahi hai broadcast ke liye.")
+
+    status = await message.answer(f"📤 <b>Broadcasting...</b>\n\n0 / {total}")
+    sent = failed = 0
+
+    for i, uid in enumerate(users, 1):
+        try:
+            await message.copy_to(uid)
+            sent += 1
         except Exception:
-            bot.answer_callback_query(call.id, "Already Up-to-date!")
+            failed += 1
 
-    elif data == "btn_host":
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, "📁 **Send your `.py`, `.js` or `.zip` file to start hosting!**")
+        if i % 25 == 0 or i == total:
+            try:
+                await status.edit_text(
+                    f"📤 <b>Broadcasting...</b>\n\n{i} / {total}\n"
+                    f"✅ Sent: {sent}   ❌ Failed: {failed}"
+                )
+            except TelegramBadRequest:
+                pass
+        await asyncio.sleep(0.05)  # flood-safe
 
-    elif data == "btn_status":
-        bot.answer_callback_query(call.id, "Checking Live Status...")
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT filename, pid, status FROM hosted_files WHERE user_id=?", (user_id,))
-        files = cursor.fetchall()
-        conn.close()
+    await status.edit_text(
+        f"✅ <b>BROADCAST COMPLETE!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Total: {total}\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}\n"
+        f"━━━━━━━━━━━━━━━━━━━━",
+        reply_markup=back_kb(),
+    )
 
-        if not files:
-            bot.send_message(call.message.chat.id, "ℹ️ **No hosted files found in your account.**")
-            return
 
-        status_text = "📊 **YOUR LIVE HOSTED PROCESSES:**\n\n"
-        for fname, pid, st in files:
-            is_alive = psutil.pid_exists(pid) if pid else False
-            live_st = "🟢 Running" if is_alive else "🔴 Stopped"
-            status_text += f"• 📄 `{fname}`\n  ├ 📌 PID: `{pid}`\n  └ ⚡ Status: {live_st}\n\n"
+# ============================================================
+#  🌐 WEB SERVER (Render Web Service ke liye zaroori)
+# ============================================================
+async def health(request):
+    return web.Response(
+        text=f"🤖 Bot is running!\nUsers: {total_users()}\nTime: {datetime.now()}",
+        content_type="text/plain",
+    )
 
-        bot.send_message(call.message.chat.id, status_text)
 
-    elif data == "btn_myfiles":
-        bot.answer_callback_query(call.id)
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, filename, pid FROM hosted_files WHERE user_id=?", (user_id,))
-        files = cursor.fetchall()
-        conn.close()
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
 
-        if not files:
-            bot.send_message(call.message.chat.id, "📂 **You haven't uploaded any files yet.**")
-            return
+    runner = web.AppRunner(app)
+    await runner.setup()
 
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for fid, fname, pid in files:
-            is_alive = psutil.pid_exists(pid) if pid else False
-            st_icon = "🟢" if is_alive else "🔴"
-            markup.add(types.InlineKeyboardButton(f"{st_icon} {fname}", callback_data=f"manage_{fid}"))
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"🌐 Web server started on port {port}")
 
-        markup.add(types.InlineKeyboardButton("⬅️ Back to Menu", callback_data="btn_back_main"))
-        bot.edit_message_text("📁 **SELECT A FILE TO MANAGE:**", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
-    elif data.startswith("manage_"):
-        file_id = int(data.split("_")[1])
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT filename, pid, file_type FROM hosted_files WHERE id=?", (file_id,))
-        row = cursor.fetchone()
-        conn.close()
+# ============================================================
+#  ▶️ MAIN
+# ============================================================
+async def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    log = logging.getLogger("BOT")
 
-        if row:
-            fname, pid, ftype = row
-            is_alive = psutil.pid_exists(pid) if pid else False
-            manage_text = (
-                f"⚙️ **MANAGING FILE:** `{fname}`\n\n"
-                f"⚡ **Type:** `{ftype}`\n"
-                f"📌 **PID:** `{pid}`\n"
-                f"🟢 **Status:** `{'Running' if is_alive else 'Stopped'}`"
-            )
-            bot.edit_message_text(manage_text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_file_control_keyboard(file_id, is_alive))
+    db_init()
+    log.info("🗄️ Database ready")
 
-    elif data.startswith("act_stop_"):
-        file_id = int(data.split("_")[2])
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT filename, pid FROM hosted_files WHERE id=?", (file_id,))
-        row = cursor.fetchone()
+    # ---------------------------------------------------------
+    # ⭐ SABSE IMPORTANT STEP:
+    # Purane host (Render/Heroku/VPS) ka webhook hata deta hai.
+    # Isse naya host clean tarike se polling start kar pata hai.
+    # ---------------------------------------------------------
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        log.info("🧹 Purane host ka webhook REMOVE ho gaya (drop_pending_updates=True)")
+    except Exception as e:
+        log.warning(f"Webhook delete me dikkat: {e}")
 
-        if row:
-            fname, pid = row
-            if pid and psutil.pid_exists(pid):
-                kill_process_tree(pid)
-            cursor.execute("UPDATE hosted_files SET pid=NULL, status='Stopped' WHERE id=?", (file_id,))
-            conn.commit()
-            bot.answer_callback_query(call.id, f"🛑 {fname} Stopped!")
-            bot.edit_message_text(f"🛑 **{fname}** has been stopped.", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_file_control_keyboard(file_id, False))
-        conn.close()
+    # Bot commands set karo (menu button)
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="🚀 Bot Start karo"),
+            BotCommand(command="profile", description="👤 Meri Profile"),
+            BotCommand(command="help", description="ℹ️ Help Menu"),
+            BotCommand(command="admin", description="🛠️ Admin Panel"),
+            BotCommand(command="cancel", description="❌ Cancel"),
+        ]
+    )
+    log.info("⌨️ Bot commands set ho gaye")
 
-    elif data.startswith("act_start_") or data.startswith("act_restart_"):
-        file_id = int(data.split("_")[2])
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, filename, pid FROM hosted_files WHERE id=?", (file_id,))
-        row = cursor.fetchone()
+    # Render Web Service ke liye health server
+    await start_web_server()
 
-        if row:
-            f_user_id, fname, pid = row
-            if pid and psutil.pid_exists(pid):
-                kill_process_tree(pid)
+    me = await bot.get_me()
+    log.info(f"✅ Bot started: @{me.username} (ID: {me.id})")
+    log.info(f"👑 Admin ID: {ADMIN_ID}")
 
-            fpath = f"uploads/{f_user_id}/{fname}"
-            proc = None
-            if fname.endswith('.py'):
-                proc = subprocess.Popen([sys.executable, fpath])
-            elif fname.endswith('.js'):
-                proc = subprocess.Popen(["node", fpath])
+    # Polling start — yahi se bot chalta hai
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
-            new_pid = proc.pid if proc else None
-            cursor.execute("UPDATE hosted_files SET pid=?, status='Running' WHERE id=?", (new_pid, file_id))
-            conn.commit()
 
-            bot.answer_callback_query(call.id, f"🚀 {fname} Started!")
-            bot.edit_message_text(f"🚀 **{fname}** is now Running! (PID: `{new_pid}`)", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_file_control_keyboard(file_id, True))
-        conn.close()
-
-    elif data.startswith("act_delete_"):
-        file_id = int(data.split("_")[2])
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, filename, pid FROM hosted_files WHERE id=?", (file_id,))
-        row = cursor.fetchone()
-
-        if row:
-            f_user_id, fname, pid = row
-            if pid and psutil.pid_exists(pid):
-                kill_process_tree(pid)
-
-            fpath = f"uploads/{f_user_id}/{fname}"
-            if os.path.exists(fpath):
-                os.remove(fpath)
-
-            cursor.execute("DELETE FROM hosted_files WHERE id=?", (file_id,))
-            conn.commit()
-
-            bot.answer_callback_query(call.id, f"🗑️ {fname} Deleted!")
-            bot.edit_message_text(f"🗑️ **{fname}** has been permanently deleted.", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_main_keyboard(user_id))
-        conn.close()
-
-    elif data == "btn_logs" or data.startswith("act_log_"):
-        bot.answer_callback_query(call.id, "Fetching Logs...")
-        bot.send_message(call.message.chat.id, "📊 **LOGS SYSTEM:** All processes running without errors.")
-
-    elif data == "btn_help":
-        bot.answer_callback_query(call.id)
-        help_text = (
-            "💡 **SR HAKER HOSTING BOT HELP**\n\n"
-            "1️⃣ Send your `.py` or `.js` script.\n"
-            "2️⃣ Auto-installer setup dependencies.\n"
-            "3️⃣ Script runs 24/7 in background.\n"
-            "4️⃣ Use **My Files** to stop, restart, or delete scripts anytime."
-        )
-        bot.send_message(call.message.chat.id, help_text)
-
-    elif data == "btn_admin" and user_id == OWNER_ID:
-        conn = sqlite3.connect("bot_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM hosted_files")
-        total_files = cursor.fetchone()[0]
-        conn.close()
-
-        admin_text = (
-            f"👑 **ADMIN CONTROL PANEL** 👑\n\n"
-            f"👥 **Total Users:** `{total_users}`\n"
-            f"📁 **Total Hosted Files:** `{total_files}`\n"
-            f"🖥️️ **CPU Usage:** `{psutil.cpu_percent()}%`\n"
-            f"🧠 **RAM Usage:** `{psutil.virtual_memory().percent}%`"
-        )
-        bot.send_message(call.message.chat.id, admin_text)
-
-# =========================================================
-# CONFLICT-SAFE POLLING ENGINE
-# =========================================================
-def start_bot_polling():
-    while True:
-        try:
-            print("🚀 Starting SR HAKER Host Bot Polling...")
-            # Webhook aur ongoing connections drop karne ke liye drop_pending_updates True rakha hai
-            bot.remove_webhook()
-            time.sleep(1)
-            bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
-        except telebot.apihelper.ApiTelegramException as e:
-            if "Conflict" in str(e) or "409" in str(e):
-                print("⚠️ Telegram 409 Conflict Detected! Clearing previous instance...")
-                time.sleep(5)
-            else:
-                print(f"⚠️ Telegram API Error: {e}")
-                time.sleep(3)
-        except Exception as e:
-            print(f"⚠️ Unexpected Error: {e}")
-            time.sleep(3)
-
-if __name__ == '__main__':
-    # Start Keep-Alive Flask Server
-    threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Start Polling with Conflict Protection
-    start_bot_polling()
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("🛑 Bot band ho gaya")
